@@ -1,0 +1,150 @@
+Data Races in Golang
+...and how to stop them!
+13 Jun 2017
+
+Danny Roes
+Dejero
+
+* What We'll Cover
+- What's a race condition? (And what does that mean in Golang?)
+- Finding data races in your code
+- Fixing data races
+- Avoiding data races in the first place
+
+* Race Conditions
+
+* What's a Race Condition?
+
+A race condition or race hazard is the behaviour of an electronic, software, or other system where the output is dependent on the sequence or timing of other uncontrollable events.
+.caption [[http://wikipedia.org/wiki/Race_Condition]]
+: Based on the concept of electrical signals 'racing' to affect the output of a logic gate first
+
+* Race Condition vs. Data Race
+
+- *Race*condition* describes the undesirable behaviour of a program
+- *Data*race* describes a bug in implementation that causes race conditions
+
+* In Golang
+.play -edit raceEx.go /START OMIT/,/END OMIT/
+- A data race occurs when two or more threads attempt to access a memory location at the same time, and at least one of the operations is a write.
+- Concurrent reads of the same memory location are safe.
+- Since 1.6, the Go runtime can detect some common misuse and throw a fatal error.
+: Specifically, concurrent map access issues
+
+* Finding Data Races
+
+* Using -race
+Most Go commands (such as _go_build_, _go_install_, _go_run_, _go_test_) allow the use of the -race flag. The results of the command will run with all memory access instrumented using Google's ThreadSanitizer, and warnings will be thrown when a data race is encountered.
+
+: The ThreadSanitizer records metadata about how the memory is accessed, and the runtime monitors this metadata as the program runs for unsynchronized access to the same location
+
+- Because memory access is being audited instead of code, Go can only detect data races in code that runs during the execution
+- This makes integration/load tests an ideal place to test a build using -race
+- Binaries created using -race are not suited for production due to additional memory and processing overhead.
+: memory usage may increase by 5-10x and execution time by 2-20x
+
+* Example Stateful App 
+: Simulation of an app with a couple features. This app keeps a global state, and it also has a log writer function which runs in a goroutine - to avoid disk write delays, for instance. The log function also writes the current app state along with the log message.
+.play statefulApp.go /START OMIT/,/END OMIT/
+
+* BUT:
+.play statefulApp.sh /START OMIT/,/END OMIT/
+- Even though the app appeared to run correctly, we have a race condition
+- The race detector won't cause false-positives. If it reports a data race, your program has a problem.
+
+* Race Detector Output
+
+	==================
+	WARNING: DATA RACE
+	Write at 0x00000118e8b0 by main goroutine:
+	  main.main()
+	      /statefulApp.go:16 +0xa1
+
+	Previous read at 0x00000118e8b0 by goroutine 6:
+	  runtime.convT2E()
+	      /usr/local/Cellar/go/1.8.3/libexec/src/runtime/iface.go:191 +0x0
+	  main.writeLog.func1()
+	      /statefulApp.go:27 +0x99
+
+	Goroutine 6 (finished) created at:
+	  main.writeLog()
+	      /statefulApp.go:28 +0x56
+	  main.main()
+	      /statefulApp.go:13 +0x81
+	==================
+
+* Determining the Problem
+.code -numbers statefulApp.go /START OMIT/,/END OMIT/ HLrace
+: As soon as you put your code into a goroutine, you pass off control of *when* it will run. The runtime is free to schedule goroutines to run when it wants, in whatever order it wants.
+
+* Fixing Data Races
+
+* Adding a Mutex
+.code statefulAppMutex.go /MUTEX OMIT/,/MUTEXEND OMIT/
+`...`
+.play statefulAppMutex.go /START OMIT/,/END OMIT/
+
+* Does it pass?
+.play statefulAppMutex.sh /START OMIT/,/END OMIT/
+
+* When is a Mutex appropriate?
+Generally:
+
+- State
+- Caches
+- ...or when it's the simplest solution to your problem
+: Consider simplicity from a logic perspective, but also from an expressiveness perspective
+
+* Work Sharing
+.code primeCalc.go /primes OMIT/,/endprimes OMIT/
+: This function accepts a map with an integer index and string value, along with a start index and number of items to process. For each element in the range, it checks if the index is a prime number and updates the string value accordingly.
+
+* Work Sharing
+.play -edit primeCalc.go /main OMIT/,/endmain OMIT/
+: This main function generates a map of numbers, and passes it to two goroutines to be operated on.
+
+* Maps
+- Treated as one object. It's illegal to read from one key while concurrently writing to another.
+- Iterating over a map is effectively a read
+- Can't be dereferenced by copying to another variable or passing to a function
+- Can only 'deep copy' by manually moving each element to a new map
+- Watch out for maps within maps
+- sync.Map is coming soon!
+
+* Using Channels
+.code primeCalcChannel.go /primes OMIT/,/endprimes OMIT/
+
+* Using Channels
+.play -edit primeCalcChannel.go /main OMIT/,/endmain OMIT/
+
+* When are Channels appropriate?
+Generally:
+
+- Passing ownership of data
+- Distributing work
+- Receiving asynchronous results
+- ...or when it's the simplest solution to your problem
+
+* Avoiding Data Races
+
+* Pipelines
+- Send pointers between different goroutines by using channels
+- Goroutines should never read/modify data outside their scope without first receiving a pointer to it via their input channel
+- Once a goroutine has pushed a pointer to its output channel, it should not read/modify it again
+
+Share memory by communicating, don't communicate by sharing memory.
+
+* Other Guidelines
+
+- If multiple goroutines need to access data in an undetermined order, protect it with a mutex
+- If timing needs to be synchronized between multiple goroutines, use a waitGroup
+- Context can be used to provide data and signals to your goroutines
+
+* Questions?
+
+* Further Reading
+
+- The Go Blog - Introducing the Go Race Detector [[https://blog.golang.org/race-detector]]
+- Go Docs - Data Race Detector [[https://golang.org/doc/articles/race_detector.html]]
+- Go Wiki - Mutex or Channel? [[https://github.com/golang/go/wiki/MutexOrChannel]]
+- Google's ThreadSanitizer [[https://github.com/google/sanitizers/wiki/ThreadSanitizerAlgorithm]]
